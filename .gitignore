@@ -1,0 +1,8 @@
+# Installed packages (re-created with `npm install`)
+node_modules/
+
+# Secrets - NEVER commit your API key
+.env
+
+# Your personal medication data stays on your computer
+data/*.json

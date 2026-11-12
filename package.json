@@ -1,0 +1,30 @@
+{
+  "name": "claude-medication-assistant",
+  "version": "1.0.0",
+  "description": "A conversational medication assistant: tell it your medicines in plain words, get a daily schedule, and export your history for your doctor. Built with the Claude API.",
+  "scripts": {
+    "hello": "tsx --env-file=.env src/hello.ts",
+    "typecheck": "tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FaizaLatif/claude-medication-assistant.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/FaizaLatif/claude-medication-assistant/issues"
+  },
+  "homepage": "https://github.com/FaizaLatif/claude-medication-assistant#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
