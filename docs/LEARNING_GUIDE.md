@@ -9,15 +9,18 @@ Each step follows one Claude Platform 101 lesson. Tick the boxes as I go.
 
 ```
 claude-medication-assistant/
-├── src/
-│   └── hello.ts          ← my code (TypeScript). First program: one API call
-├── data/                 ← my medication data (JSON) will live here
-│   └── .gitkeep          ← empty file so Git keeps the folder
+├── src/                  ← my code (TypeScript)
+│   ├── index.ts          ← the program: system prompt + my hand-written agent loop
+│   ├── tools.ts          ← tool definitions (add_medication) + the code that runs them
+│   └── storage.ts        ← reads/writes data/medications.json
+├── data/                 ← my medication data (JSON) lives here
+│   ├── .gitkeep          ← empty file so Git keeps the folder
+│   └── medications.json  ← created on the first run (Git ignores it)
 ├── docs/
 │   └── LEARNING_GUIDE.md ← this file
 ├── node_modules/         ← installed packages (never edit, never commit)
 ├── .env                  ← MY SECRET API KEY (never commit, never share)
-├── .env.example          ← template showing what goes in .env (safe to commit)
+├── .env.example          ← (not created yet) template showing what goes in .env (safe to commit)
 ├── .gitignore            ← list of files Git must ignore
 ├── package.json          ← project "ID card": name, packages, shortcut scripts
 ├── package-lock.json     ← exact versions installed (commit it, never edit)
@@ -38,15 +41,41 @@ claude-medication-assistant/
 | **.env** | File with secrets, loaded when the program starts | A locked drawer |
 | **Git** | Saves snapshots of my project over time | Save points in a game |
 
-### How `npm run hello` works
+### How `npm start` works
 
-1. npm looks in `package.json` → `scripts.hello` → `tsx --env-file=.env src/hello.ts`
+1. npm looks in `package.json` → `scripts.start` → `tsx --env-file=.env src/index.ts`
 2. `--env-file=.env` loads my API key into the environment.
-3. `tsx` runs `src/hello.ts`.
+3. `tsx` runs `src/index.ts`.
 4. `new Anthropic()` finds the key automatically.
-5. `client.messages.create(...)` sends **model + system prompt + messages** to Claude.
-6. Claude answers with a list of **content blocks**; I print the `text` ones.
+5. `client.messages.create(...)` sends **model + system prompt + tools + messages** to Claude.
+6. Claude answers with a list of **content blocks** (`text`, `tool_use`, ...) and a **`stop_reason`**.
 7. `usage` tells me tokens in/out, which is what I pay for.
+
+### How my agent loop works (`src/index.ts`)
+
+```
+for turn 1..5:
+    response = send(messages)
+    add Claude's full reply to messages
+    if stop_reason == "end_turn"  → print the text, stop
+    if stop_reason == "tool_use"  → run each tool, send ALL results back in ONE user message, loop again
+    anything else (max_tokens, refusal) → stop and say why
+```
+
+- **Max 5 turns** is a safety net so a confused loop can't run (and cost money) forever.
+- I push Claude's **whole** `response.content`, not just the text, so it remembers its own tool calls.
+- Each `tool_result` has the same `tool_use_id` as the call it answers.
+- If my tool fails, I send back `is_error: true` with the reason. Claude can then fix the input or tell me.
+
+### How `add_medication` works (`src/tools.ts`)
+
+1. **Definition** (sent to Claude): name, description ("never guess a dose"), JSON schema with `strict: true`.
+2. **Second check** (my code): Zod checks rules strict mode can't, like `every_hours` 1–24
+   and "if `timing_type` is `every_x_hours`, `every_hours` must be filled in".
+3. **My code adds** `id`, `status: "current"` and `end_date`, then saves to `data/medications.json`.
+   - `end_date` = the **last day** I take it: start + duration − 1.
+     "4 days from 17 Nov" → 17, 18, 19, 20 → `end_date: 2026-11-20`.
+   - Ongoing (`duration_days: null`) → `end_date: null`.
 
 ### Key vocabulary
 
@@ -65,7 +94,7 @@ claude-medication-assistant/
 ```bash
 cd ~/Documents/Projects/claude-medication-assistant   # go to the project
 
-npm run hello        # run my first program
+npm start            # run the assistant (uses the API = costs a little)
 npm run typecheck    # check my code for type errors (no API call, free)
 npm install          # re-install packages (e.g. after cloning on a new PC)
 
@@ -91,36 +120,42 @@ git log --oneline    # list of my snapshots
 
 ## 4. The roadmap
 
-Legend: ✅ done · ⬜ to do
+Legend: ✅ done · 🟡 in progress · ⬜ to do
 
 ### Phase 0: Setup
 
 - ✅ **Step 0: Project setup.** Node project, SDK, Zod, TypeScript, `.env`, first API call works.
-- ⬜ **Step 1: First Git commit.**
+  - Later renamed `hello.ts` → `index.ts` and `npm run hello` → `npm start`.
+- ✅ **Step 1: First Git commit.**
   - Learn: `git status`, `git add`, `git commit`, `git push`.
   - Check `.env` is **not** in the list before committing.
   - Done when: GitHub shows the files, and `.env` is not there.
 
 ### Phase 1: Core assistant (terminal app + JSON files)
 
-- ⬜ **Step 2: The data model** *(no API yet)*
-  - Create `src/schema.ts`: a Zod schema for a medication entry:
-    name, dose, schedule (time slots *or* every N hours), start date, end date,
-    with food?, reason, prescriber, status (`active` / `stopped`), stop reason.
-  - Create `src/storage.ts`: read/write `data/medications.json`.
+- 🟡 **Step 2: The data model**
+  - ✅ `src/storage.ts`: read/write `data/medications.json` (creates the folder + `[]` if missing).
+  - ✅ Zod schema for a medication. It lives in `src/tools.ts` for now, not in a separate `src/schema.ts`.
+    Fields: name, dose, timing (`times_of_day` / `every_x_hours` / `when_needed`), with food,
+    start date, duration → end date, reason, status.
+  - ⬜ Still missing from the plan: **prescriber**, **stop reason**, and status `stopped`
+    (the code uses `"current"`, not `"active"`; pick one name and stick to it).
   - Learn: Zod, types, reading/writing JSON files.
-  - Done when: a small script saves one fake medicine and reads it back.
 
 - ⬜ **Step 3: Lesson "Your first API call" (part 2): ask about my list**
   - Load the saved list and put it in the prompt; ask "What am I taking?"
   - Learn: giving Claude context, why answers must come *only* from the data.
   - Done when: Claude answers correctly and says "I don't know" for things not in the list.
 
-- ⬜ **Step 4: Lesson "The agent loop + tool use": manual loop**
-  - Build a terminal chat (`src/chat.ts`, `npm run chat`) that keeps the conversation.
-  - Add the first tool: **`add_medication`** with `strict: true`.
-  - Write the loop myself: `stop_reason === "tool_use"` → run tool → send `tool_result`.
-  - System prompt: ask **one** clarifying question at a time; never guess a dose.
+- 🟡 **Step 4: Lesson "The agent loop + tool use": manual loop** *(done early, before Step 3)*
+  - ✅ First tool: **`add_medication`** with `strict: true` + Zod double-check (`src/tools.ts`).
+  - ✅ Loop written by hand in `src/index.ts`: `client.messages.create` + `stop_reason` checks, max 5 turns.
+  - ✅ System prompt has today's date, "never guess a dose", "only record what the doctor/leaflet said about food".
+  - ⬜ Run `npm start` with the Brufen test message and check `data/medications.json`:
+    `every_x_hours`, `every_hours: 6`, `with_food: "not_specified"`, `end_date` = start + 3 days.
+  - ⬜ Commit it.
+  - ⬜ Turn the one fixed test message into a real terminal chat (`src/chat.ts`, `npm run chat`) that keeps the conversation.
+  - ⬜ System prompt: ask **one** clarifying question at a time.
   - Done when: "Brufen 400 every 6 hours for 4 days, starting today" → saved entry with correct end date.
 
 - ⬜ **Step 5: More tools**
@@ -191,4 +226,12 @@ Legend: ✅ done · ⬜ to do
 
 *(What I learned, surprises, model comparison results...)*
 
--
+- **Strict mode has limits.** `strict: true` guarantees the *shape* of Claude's input, but it doesn't
+  support `minimum` / `maximum` / `minLength`. So "1–24 hours" goes in the description, and Zod checks it in my code.
+- **"Optional" in strict mode = nullable.** Every field must be in `required`; I allow `null` instead
+  (`type: ["integer", "null"]`). Every object needs `additionalProperties: false`.
+- **Claude doesn't know today's date** unless I tell it. That's why the system prompt includes it
+  (local time, not UTC, or "today" can be wrong late at night).
+- **Claude asks, my code does.** Claude only *proposes* the tool input; my code adds the `id`, `status`
+  and `end_date`, and does the saving. Calculations I can do in code, I don't leave to the model.
+- **Git works in Git Bash**, not in PowerShell (it isn't on the PowerShell PATH).
