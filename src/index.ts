@@ -1,6 +1,6 @@
 // Lesson 1: "Your first API call"
 // Sends one message to Claude and prints the answer.
-// Run it with:  npm run hello
+// Run it with:  npm start
 
 import Anthropic from "@anthropic-ai/sdk";
 

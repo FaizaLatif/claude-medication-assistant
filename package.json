@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "A conversational medication assistant: tell it your medicines in plain words, get a daily schedule, and export your history for your doctor. Built with the Claude API.",
   "scripts": {
-    "hello": "tsx --env-file=.env src/hello.ts",
+    "start": "tsx --env-file=.env src/index.ts",
     "typecheck": "tsc"
   },
   "repository": {
