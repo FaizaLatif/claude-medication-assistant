@@ -14,28 +14,42 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { addMedicationTool, runTool } from "./tools.js";
+import { runTool, tools } from "./tools.js";
 
 const client = new Anthropic();
 const MODEL = "claude-haiku-5-5";
 const MAX_TURNS = 5;
 
-// Today's date in YOUR time zone, as YYYY-MM-DD, so "starting today" works.
-const now = new Date();
-const today = [
-  now.getFullYear(),
-  String(now.getMonth() + 1).padStart(2, "0"),
-  String(now.getDate()).padStart(2, "0"),
-].join("-");
+// The current date and time in YOUR time zone, e.g. "Thursday 2026-11-19 14:05".
+// Worked out fresh before EVERY request, so it is right even if the chat
+// stays open for hours. (Claude has no clock: it only knows what we tell it.)
+function currentDateTime(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const weekday = now.toLocaleDateString("en-GB", { weekday: "long" });
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return `${weekday} ${date} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+}
 
-const SYSTEM_PROMPT = `You are a medication assistant. You help the user keep an organised list of what their doctor prescribed.
-Today's date is ${today}.
+// A function (not a fixed string) so the date and time are always current.
+// Note for Step 14: a system prompt that changes every minute can't be cached.
+const systemPrompt = () => `You are a medication assistant. You help the user keep an organised list of what their doctor prescribed.
+The current date and time is ${currentDateTime()} (24-hour clock, the user's local time).
 
 Rules:
 - Never guess a dose. If the user hasn't told you the dose, ask for it.
 - Only record what the doctor or the leaflet said about food. If the user didn't mention food, use "not_specified".
 - You never give medical advice or change a treatment.
-- After saving a medication, briefly confirm what you saved.`;
+- For an every_x_hours medicine, if the time of the first dose is unknown, ask: "What time did you take (or will you take) the first one?" and save it as first_dose_time.
+- If get_schedule lists a medicine under first_dose_time_unknown, ask that same question, save the answer with update_medication, then call get_schedule again.
+- Before saving a NEW medicine, show a one-line summary (name, dose, timing, first dose time, food, start date, duration, reason) and ask the user to confirm. Only call add_medication after they say yes.
+- To find a medicine the user mentions, call list_medications and use the id it returns. Never invent an id.
+- If the user corrects something already saved, use update_medication with only the fields that change. Never add a second copy.
+- If the user stopped taking a medicine, use stop_medication. If they didn't say why, or when, ask before stopping it.
+- Never delete medicines. Stopped medicines stay in the history.
+- After saving, updating or stopping, briefly confirm what you did.
+- For "what do I take now?" and similar questions, call get_schedule for today. Answer with what is due now (within about an hour of the current time, before or after) and what comes next. If nothing is left today, call get_schedule for tomorrow to find the next dose.
+- Answer questions about when to take something ONLY from get_schedule, never from general knowledge.`;
 
 // ONE conversation for the whole program. It lives outside both loops,
 // so every new message is added to the same list and Claude "remembers".
@@ -48,8 +62,8 @@ async function runAgent(): Promise<boolean> {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 16000,
-      system: SYSTEM_PROMPT,
-      tools: [addMedicationTool],
+      system: systemPrompt(),
+      tools,
       messages,
     });
 
