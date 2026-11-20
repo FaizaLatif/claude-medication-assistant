@@ -4,6 +4,9 @@
 //   update_medication  fix a mistake in a saved medicine
 //   stop_medication    mark a medicine as stopped (never deletes it)
 //   get_schedule       what to take on a given day, sorted by time
+//   get_profile        read my name, allergies and notes
+//   update_profile     change my name, allergies and notes
+//   export_history     write a Markdown summary for family or a doctor
 //
 // Each tool has two halves:
 //   1. A definition (name + description + JSON schema) that we SEND to Claude,
@@ -13,7 +16,11 @@
 import { randomUUID } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { loadMedications, loadSettings, saveMedications, type Medication } from "./storage.js";
+import {
+  loadMedications, loadProfile, loadSettings, saveMedications, saveProfile,
+  type Medication, type Profile,
+} from "./storage.js";
+import { exportHistory } from "./export.js";
 
 // ===========================================================================
 // 1. The definitions sent to Claude
@@ -63,6 +70,12 @@ const medicationFieldSchemas = {
     description: "Number of days to take it, or null if ongoing",
   },
   reason: { type: ["string", "null"], description: "What it is for, or null if unknown" },
+  prescribed_by: {
+    type: ["string", "null"],
+    description:
+      "Who prescribed it, e.g. \"Dentist\", \"Dr. Silva (cardiologist)\" or " +
+      "\"Self / over the counter\". null if the user didn't say",
+  },
 } as const;
 
 export const addMedicationTool: Anthropic.Tool = {
@@ -155,6 +168,72 @@ export const getScheduleTool: Anthropic.Tool = {
   },
 };
 
+export const getProfileTool: Anthropic.Tool = {
+  name: "get_profile",
+  description:
+    "Read the user's profile: their name, allergies and personal notes. Call this " +
+    "for any question about who the user is or what they are allergic to.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+};
+
+export const updateProfileTool: Anthropic.Tool = {
+  name: "update_profile",
+  description:
+    "Change the user's profile: their name, allergies and personal notes. Send only " +
+    "what changes. Returns the whole updated profile. " +
+    "Only remove an allergy after the user has confirmed it.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "The user's name" },
+      add_allergies: {
+        type: "array", items: { type: "string" },
+        description: "Allergies to add, e.g. [\"penicillin\"]",
+      },
+      remove_allergies: {
+        type: "array", items: { type: "string" },
+        description: "Allergies to remove, exactly as listed in the profile",
+      },
+      add_notes: {
+        type: "array", items: { type: "string" },
+        description: "Notes to add, e.g. [\"Has trouble swallowing large tablets\"]",
+      },
+      remove_notes: {
+        type: "array", items: { type: "string" },
+        description: "Notes to remove, exactly as listed in the profile",
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+};
+
+export const exportHistoryTool: Anthropic.Tool = {
+  name: "export_history",
+  description:
+    "Write the user's medication history to a Markdown file and return its path. " +
+    "family: name, allergies, current medicines and when to take them. " +
+    "doctor: profile, allergies, current medicines with start date and prescriber, " +
+    "then past medicines with dates and why they were stopped.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    properties: {
+      audience: { type: "string", enum: ["family", "doctor"] },
+      language: { type: "string", enum: ["en", "pt"], description: "en = English, pt = Portuguese" },
+    },
+    required: ["audience", "language"],
+    additionalProperties: false,
+  },
+};
+
 // index.ts sends this whole list to Claude on every request.
 export const tools: Anthropic.Tool[] = [
   addMedicationTool,
@@ -162,6 +241,9 @@ export const tools: Anthropic.Tool[] = [
   updateMedicationTool,
   stopMedicationTool,
   getScheduleTool,
+  getProfileTool,
+  updateProfileTool,
+  exportHistoryTool,
 ];
 
 // ===========================================================================
@@ -182,6 +264,7 @@ const MedicationFields = z.object({
   start_date: z.iso.date(),
   duration_days: z.int().min(1).nullable(),
   reason: z.string().nullable(),
+  prescribed_by: z.string().min(1).nullable(),
 });
 
 // The timing fields must match timing_type. Used for new AND updated medicines,
@@ -211,6 +294,20 @@ const ListInput = z.object({
 const UpdateInput = MedicationFields.partial().extend({ id: z.string() });
 
 const ScheduleInput = z.object({ date: z.iso.date() });
+
+const ProfileList = z.array(z.string().trim().min(1)).optional();
+const UpdateProfileInput = z.object({
+  name: z.string().trim().min(1).optional(),
+  add_allergies: ProfileList,
+  remove_allergies: ProfileList,
+  add_notes: ProfileList,
+  remove_notes: ProfileList,
+});
+
+const ExportInput = z.object({
+  audience: z.enum(["family", "doctor"]),
+  language: z.enum(["en", "pt"]),
+});
 
 const StopInput = z.object({
   id: z.string(),
@@ -268,8 +365,10 @@ async function updateMedication(input: unknown): Promise<Medication> {
   // Put the changes on top of the saved entry, then check the WHOLE result
   // with the same rules as add_medication. (Zod keeps only the medicine
   // fields here, so id/status/stop info can't be changed by this tool.)
-  // (first_dose_time: null first, for entries saved before Step 5 that don't have it.)
-  const merged = CheckedMedicationFields.parse({ first_dose_time: null, ...existing, ...changes });
+  // (The nulls first are for older entries that don't have these fields yet.)
+  const merged = CheckedMedicationFields.parse({
+    first_dose_time: null, prescribed_by: null, ...existing, ...changes,
+  });
 
   const updated: Medication = { ...existing, ...merged };
   if ("start_date" in changes || "duration_days" in changes) {
@@ -377,6 +476,36 @@ async function getSchedule(input: unknown) {
   };
 }
 
+// --- update_profile --------------------------------------------------------
+
+// Compare ignoring upper/lower case: "Penicillin" and "penicillin" are the same.
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+async function updateProfile(input: unknown): Promise<{ profile: Profile; not_found: string[] }> {
+  const changes = UpdateProfileInput.parse(input);
+  const profile = await loadProfile();
+  const notFound: string[] = [];
+
+  // Adds items that aren't already in the list (no duplicates).
+  const addTo = (items: string[], toAdd: string[] = []) => {
+    for (const item of toAdd) if (!items.some((i) => same(i, item))) items.push(item);
+  };
+  // Removes items; remembers any that weren't there, so Claude can say so.
+  const removeFrom = (items: string[], toRemove: string[] = []) => {
+    for (const r of toRemove) if (!items.some((i) => same(i, r))) notFound.push(r);
+    return items.filter((i) => !toRemove.some((r) => same(r, i)));
+  };
+
+  if (changes.name) profile.name = changes.name;
+  addTo(profile.allergies, changes.add_allergies);
+  addTo(profile.notes, changes.add_notes);
+  profile.allergies = removeFrom(profile.allergies, changes.remove_allergies);
+  profile.notes = removeFrom(profile.notes, changes.remove_notes);
+
+  await saveProfile(profile);
+  return { profile, not_found: notFound };
+}
+
 // The loop in index.ts calls this with whatever tool Claude picked.
 // It always returns a tool_result. If something goes wrong, is_error: true
 // tells Claude it failed, so it can fix the input or tell the user.
@@ -389,6 +518,13 @@ export async function runTool(block: Anthropic.ToolUseBlock): Promise<Anthropic.
       case "update_medication": result = await updateMedication(block.input); break;
       case "stop_medication":   result = await stopMedication(block.input); break;
       case "get_schedule":      result = await getSchedule(block.input); break;
+      case "get_profile":       result = await loadProfile(); break;
+      case "update_profile":    result = await updateProfile(block.input); break;
+      case "export_history": {
+        const { audience, language } = ExportInput.parse(block.input);
+        result = await exportHistory(audience, language);
+        break;
+      }
       default: throw new Error(`Unknown tool: ${block.name}`);
     }
     return { type: "tool_result", tool_use_id: block.id, content: JSON.stringify(result) };

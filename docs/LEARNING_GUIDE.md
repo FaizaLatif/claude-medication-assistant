@@ -63,7 +63,7 @@ OUTER loop (the chat):
     run the INNER loop
 
 INNER loop (the agent loop), max 5 turns:
-    response = send(system prompt with current date+time, tools, messages)
+    response = send(static system prompt, tools, messages)
     if stop_reason == "end_turn"  → print "Assistant: ...", back to the chat
     if stop_reason == "tool_use"  → run each tool, send ALL results back in ONE user message, loop again
     anything else (max_tokens, refusal) → stop and say why
@@ -77,7 +77,9 @@ INNER loop (the agent loop), max 5 turns:
 - If my tool fails, I send back `is_error: true` with the reason. Claude can then fix the input or tell me.
 - **Undo a broken exchange**: if the API fails or Claude stops oddly, I cut `messages` back to where it was
   before my message. A `tool_use` without its `tool_result` would make every later request fail.
-- **The system prompt is a function**, rebuilt before every request, so the date and time are never stale.
+- **The system prompt never changes** during a chat. The date and time go at the start of each message I
+  type instead, e.g. `[Now: 2026-11-19 17:24, Thursday]`. Old messages are never edited, only added to.
+  (Why: see "Thinking blocks are tied to the history" in My notes.)
 
 ### How the tools work (`src/tools.ts`)
 
@@ -88,6 +90,9 @@ INNER loop (the agent loop), max 5 turns:
 | `update_medication` | Fixes a mistake | `id` + **only** the fields that change |
 | `stop_medication` | Marks as stopped. **Never deletes** | `id`, `stop_date`, `stop_reason` (all required) |
 | `get_schedule` | What I take on one day, sorted by time | `date` |
+| `get_profile` | Reads my name, allergies, notes | nothing |
+| `update_profile` | Changes my name, allergies, notes (no duplicates; confirm before removing an allergy) | only what changes |
+| `export_history` | Writes a Markdown file in `exports/` for family or a doctor | `audience`, `language` |
 
 Every tool has the same three parts:
 
@@ -209,7 +214,7 @@ Legend: ✅ done · 🟡 in progress · ⬜ to do
   - ✅ `first_dose_time` for `every_x_hours` medicines; Claude asks for it when it's missing.
   - ✅ `get_schedule` (Morning / Lunch / Evening / Bedtime + intervals, sorted by time).
     "What do I take now?" uses the **current date and time from my code**, not Claude's guess.
-  - ⬜ `get_profile` (allergies, notes)
+  - ✅ `get_profile` / `update_profile` (name, allergies, notes in `data/profile.json`)
   - ⬜ Test it in the chat (see the test list in my Step 4/5 notes below), then commit.
   - Done when: user stories 1, 2 and 3 from the business case work.
 
@@ -250,8 +255,7 @@ Legend: ✅ done · 🟡 in progress · ⬜ to do
 ### Phase 3: Scaling up
 
 - ⬜ **Step 14: Lesson "Context management"**: keep long chats small and cheap (caching, compaction).
-  - Remember: my system prompt changes every minute (current time), which stops it being cached.
-    Move the time somewhere else first.
+  - Already prepared: my system prompt is static (the time is in each user message), so it can be cached.
 - ⬜ **Step 15: Lesson "Managed agents"**: weekly review agent that flags medicines ending soon.
 
 ### Phase 4: Ship it
@@ -283,8 +287,12 @@ Legend: ✅ done · 🟡 in progress · ⬜ to do
   **optional** (max 24 per request across all strict tools). `type: ["integer", "null"]` makes a field
   **nullable** (max 16 per request). `update_medication` uses both: left out = "don't change", `null` = "clear it".
   Every object needs `additionalProperties: false`.
-- **Claude doesn't know the date or time** unless I tell it. The system prompt includes both, in local time
-  (not UTC, or "today" can be wrong late at night), rebuilt before every request.
+- **Claude doesn't know the date or time** unless I tell it. Each message I type starts with
+  `[Now: YYYY-MM-DD HH:MM, Weekday]` in local time (not UTC, or "today" can be wrong late at night).
+- **Thinking blocks are tied to the history** *(bug fixed after Step 6)*. Claude's thinking blocks only stay valid
+  if everything before them (system prompt + earlier messages) is unchanged. Putting the time in the
+  system prompt changed it every minute → API error 400 "Invalid signature in thinking block".
+  Rule: **the system prompt stays fixed, and the conversation only grows at the end.**
 - **Claude asks, my code does.** Claude only *proposes* the tool input; my code adds the `id`, `status`
   and `end_date`, does the saving, and calculates the schedule. Calculations I can do in code, I don't leave to the model.
 - **Claude must look up ids, never invent them.** The prompt says "call `list_medications` first", and a wrong id

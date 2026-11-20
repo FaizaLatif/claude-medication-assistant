@@ -26,6 +26,9 @@ export interface Medication {
   duration_days: number | null; // null = ongoing
   end_date: string | null; // last day to take it; null = ongoing
   reason: string | null;
+  // Who prescribed it, e.g. "Dentist" or "Self / over the counter".
+  // Optional (?) because entries saved before Step 6 don't have it.
+  prescribed_by?: string | null;
   // Only filled in when stopped. Optional (?) so older saved entries still fit.
   stop_date?: string; // "YYYY-MM-DD"
   stop_reason?: string;
@@ -48,6 +51,36 @@ export async function loadMedications(): Promise<Medication[]> {
 export async function saveMedications(medications: Medication[]): Promise<void> {
   await mkdir(dirname(DATA_FILE), { recursive: true }); // create data/ if missing
   await writeFile(DATA_FILE, JSON.stringify(medications, null, 2) + "\n", "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// Profile: my name, allergies and notes (data/profile.json).
+// Created empty on the first run; changed with the update_profile tool.
+// ---------------------------------------------------------------------------
+const PROFILE_FILE = fileURLToPath(new URL("../data/profile.json", import.meta.url));
+
+export interface Profile {
+  name: string | null;
+  allergies: string[];
+  notes: string[];
+}
+
+export async function loadProfile(): Promise<Profile> {
+  try {
+    return JSON.parse(await readFile(PROFILE_FILE, "utf8")) as Profile;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      const empty: Profile = { name: null, allergies: [], notes: [] };
+      await saveProfile(empty);
+      return empty;
+    }
+    throw err;
+  }
+}
+
+export async function saveProfile(profile: Profile): Promise<void> {
+  await mkdir(dirname(PROFILE_FILE), { recursive: true });
+  await writeFile(PROFILE_FILE, JSON.stringify(profile, null, 2) + "\n", "utf8");
 }
 
 // ---------------------------------------------------------------------------

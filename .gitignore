@@ -6,3 +6,6 @@ node_modules/
 
 # Your personal medication data stays on your computer
 data/*.json
+
+# Exported histories contain the same personal data
+exports/
