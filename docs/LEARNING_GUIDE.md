@@ -10,9 +10,14 @@ Each step follows one Claude Platform 101 lesson. Tick the boxes as I go.
 ```
 claude-medication-assistant/
 ├── src/                  ← my code (TypeScript)
-│   ├── index.ts          ← the program: system prompt + chat loop + my hand-written agent loop
-│   ├── tools.ts          ← the 5 tool definitions + the code that runs them
-│   └── storage.ts        ← reads/writes data/medications.json and data/settings.json
+│   ├── index.ts          ← the terminal chat (the outer loop): read what I type, print the answer
+│   ├── agent.ts          ← system prompt + my hand-written agent loop (sendMessage), shared with the tests
+│   ├── tools.ts          ← the 8 tool definitions + the code that runs them
+│   ├── export.ts         ← builds the Markdown history for family / a doctor
+│   └── storage.ts        ← reads/writes data/*.json (the tests point it at a temporary folder)
+├── tests/
+│   ├── cases.ts          ← 20 fictional scripted conversations + what must happen
+│   └── run.ts            ← runs them (npm test) and prints PASS/FAIL + a score
 ├── data/                 ← my medication data (JSON) lives here (Git ignores the .json files)
 │   ├── .gitkeep          ← empty file so Git keeps the folder
 │   ├── medications.json  ← my medicines, created on the first run
@@ -52,7 +57,10 @@ claude-medication-assistant/
 6. Claude answers with a list of **content blocks** (`text`, `tool_use`, ...) and a **`stop_reason`**.
 7. `usage` tells me tokens in/out, which is what I pay for.
 
-### How my two loops work (`src/index.ts`)
+### How my two loops work (`src/index.ts` + `src/agent.ts`)
+
+The outer loop is in `index.ts`. The inner loop is `sendMessage()` in `agent.ts`, so the tests can
+drive the same agent with a list of messages instead of the keyboard.
 
 ```
 messages = []                         ← ONE conversation for the whole program
@@ -140,6 +148,9 @@ Details worth remembering:
 cd ~/Documents/Projects/claude-medication-assistant   # go to the project
 
 npm start            # run the assistant (uses the API = costs a little). Type "exit" to quit.
+npm test             # run the 20 test conversations (uses the API = costs a little)
+npm test -- --only export      # only the cases whose name contains "export"
+npm test -- --verbose          # also print every conversation
 npm run typecheck    # check my code for type errors (no API call, free)
 npm install          # re-install packages (e.g. after cloning on a new PC)
 
@@ -189,7 +200,9 @@ Legend: ✅ done · 🟡 in progress · ⬜ to do
     with food, start date, duration → end date, reason.
   - ✅ Status is `"current"` / `"stopped"` (decided: not `"active"`), plus `stop_date` and `stop_reason`.
   - ✅ `data/settings.json` with my usual times for each part of the day.
-  - ⬜ Still missing from the plan: **prescriber**.
+  - ✅ Prescriber: `prescribed_by` (string or null).
+  - ✅ Profile `allergy_status`: `unknown` / `none_known` / `has_allergies`, so "no known allergies"
+    is different from "never asked".
   - Learn: Zod, types, reading/writing JSON files.
 
 - 🟡 **Step 3: Lesson "Your first API call" (part 2): ask about my list**
@@ -199,7 +212,7 @@ Legend: ✅ done · 🟡 in progress · ⬜ to do
 
 - 🟡 **Step 4: Lesson "The agent loop + tool use": manual loop** *(done early, before Step 3)*
   - ✅ First tool: **`add_medication`** with `strict: true` + Zod double-check (`src/tools.ts`).
-  - ✅ Loop written by hand in `src/index.ts`: `client.messages.create` + `stop_reason` checks, max 5 turns.
+  - ✅ Loop written by hand (now in `src/agent.ts`): `client.messages.create` + `stop_reason` checks, max 5 turns.
   - ✅ System prompt has the date, "never guess a dose", "only record what the doctor/leaflet said about food".
   - ✅ Real terminal chat (`node:readline/promises`) that keeps the conversation.
     It's in `src/index.ts` / `npm start`, not a separate `src/chat.ts` / `npm run chat`.
@@ -223,11 +236,16 @@ Legend: ✅ done · 🟡 in progress · ⬜ to do
   - Learn: what the SDK does for me, and why I wrote it by hand first.
   - Done when: same behaviour, less code.
 
-- ⬜ **Step 7: Test set (my "eval")**
-  - `tests/sentences.json`: 20 **fictional** sentences (simple / missing info / ambiguous) + expected result.
-  - `npm run eval` runs them all and prints a score.
-  - Targets: **18/20 correct**, **0 guessed doses**, **≤ 3 messages** per medicine.
-  - Run it after every change from now on.
+- 🟡 **Step 7: Test set (my "eval")**
+  - ✅ `tests/cases.ts`: 20 **fictional** scripted conversations (not single sentences), each with
+    expectations: tools that must / must not be called, the last reply, and what's saved.
+  - ✅ `npm test` (not `npm run eval`) runs them, each in a fresh temporary data folder (never my `data/`).
+    Prints PASS/FAIL with the reason, the score, **guessed doses**, **false claims** and **API errors**.
+  - ✅ The agent loop moved to `src/agent.ts` so the chat and the tests share the same code.
+  - ⬜ First real run, then write the score here.
+  - Targets: **18/20 passed**, **0 guessed doses**, **0 API errors**.
+  - Run it after every change from now on. (Claude's answers vary a bit, so one failure ≠ a bug: re-run that
+    case with `--only` and `--verbose` and read the conversation.)
 
 - ⬜ **Step 8: Lesson "Choosing the right model"**
   - Run the eval with `claude-haiku-5-5` vs `claude-sonnet-5-5`.

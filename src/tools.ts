@@ -201,6 +201,13 @@ export const updateProfileTool: Anthropic.Tool = {
         type: "array", items: { type: "string" },
         description: "Allergies to remove, exactly as listed in the profile",
       },
+      allergy_status: {
+        type: "string",
+        enum: ["none_known", "unknown"],
+        description:
+          "none_known when the user says they have no known allergies (only allowed " +
+          "when no allergies are listed). Adding an allergy sets the status automatically.",
+      },
       add_notes: {
         type: "array", items: { type: "string" },
         description: "Notes to add, e.g. [\"Has trouble swallowing large tablets\"]",
@@ -234,7 +241,7 @@ export const exportHistoryTool: Anthropic.Tool = {
   },
 };
 
-// index.ts sends this whole list to Claude on every request.
+// agent.ts sends this whole list to Claude on every request.
 export const tools: Anthropic.Tool[] = [
   addMedicationTool,
   listMedicationsTool,
@@ -300,6 +307,7 @@ const UpdateProfileInput = z.object({
   name: z.string().trim().min(1).optional(),
   add_allergies: ProfileList,
   remove_allergies: ProfileList,
+  allergy_status: z.enum(["none_known", "unknown"]).optional(),
   add_notes: ProfileList,
   remove_notes: ProfileList,
 });
@@ -502,11 +510,26 @@ async function updateProfile(input: unknown): Promise<{ profile: Profile; not_fo
   profile.allergies = removeFrom(profile.allergies, changes.remove_allergies);
   profile.notes = removeFrom(profile.notes, changes.remove_notes);
 
+  // allergy_status follows the list; "none_known" only makes sense if it's empty.
+  if (profile.allergies.length > 0) {
+    if (changes.allergy_status === "none_known") {
+      throw new Error(
+        `Can't set "none_known": the profile still lists ${profile.allergies.join(", ")}. ` +
+        "Ask the user to confirm, then remove those first. Nothing was changed.",
+      );
+    }
+    profile.allergy_status = "has_allergies";
+  } else if (changes.allergy_status) {
+    profile.allergy_status = changes.allergy_status;
+  } else if (profile.allergy_status === "has_allergies") {
+    profile.allergy_status = "unknown"; // the last allergy was removed: we no longer know
+  }
+
   await saveProfile(profile);
   return { profile, not_found: notFound };
 }
 
-// The loop in index.ts calls this with whatever tool Claude picked.
+// The loop in agent.ts calls this with whatever tool Claude picked.
 // It always returns a tool_result. If something goes wrong, is_error: true
 // tells Claude it failed, so it can fix the input or tell the user.
 export async function runTool(block: Anthropic.ToolUseBlock): Promise<Anthropic.ToolResultBlockParam> {

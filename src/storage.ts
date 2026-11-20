@@ -1,13 +1,27 @@
-// Reads and writes your medication list in data/medications.json.
-// The file is plain JSON, so you can open it in VS Code and look at it.
+// Reads and writes my data: data/medications.json, data/profile.json and
+// data/settings.json. The files are plain JSON, so you can open them in VS Code.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The path is worked out from this file's location (src/), so it works
-// no matter which folder you run the command from.
-const DATA_FILE = fileURLToPath(new URL("../data/medications.json", import.meta.url));
+// ---------------------------------------------------------------------------
+// Where the files live. Normally data/ and exports/ in the project (worked out
+// from this file's location, so it works from any folder). The tests switch to
+// a temporary folder with setDataFolders(), so they never touch my real data.
+// ---------------------------------------------------------------------------
+let dataDir = fileURLToPath(new URL("../data/", import.meta.url));
+let exportsDir = fileURLToPath(new URL("../exports/", import.meta.url));
+
+export function setDataFolders(newDataDir: string, newExportsDir: string): void {
+  dataDir = newDataDir;
+  exportsDir = newExportsDir;
+}
+export const getExportsDir = () => exportsDir;
+
+const medicationsFile = () => join(dataDir, "medications.json");
+const profileFile = () => join(dataDir, "profile.json");
+const settingsFile = () => join(dataDir, "settings.json");
 
 // One saved medication: what Claude sent, plus the fields our code adds.
 export interface Medication {
@@ -36,7 +50,7 @@ export interface Medication {
 
 export async function loadMedications(): Promise<Medication[]> {
   try {
-    const text = await readFile(DATA_FILE, "utf8");
+    const text = await readFile(medicationsFile(), "utf8");
     return JSON.parse(text) as Medication[];
   } catch (err) {
     // First run: the file doesn't exist yet, so create it with an empty list.
@@ -49,28 +63,33 @@ export async function loadMedications(): Promise<Medication[]> {
 }
 
 export async function saveMedications(medications: Medication[]): Promise<void> {
-  await mkdir(dirname(DATA_FILE), { recursive: true }); // create data/ if missing
-  await writeFile(DATA_FILE, JSON.stringify(medications, null, 2) + "\n", "utf8");
+  await mkdir(dirname(medicationsFile()), { recursive: true }); // create data/ if missing
+  await writeFile(medicationsFile(), JSON.stringify(medications, null, 2) + "\n", "utf8");
 }
 
 // ---------------------------------------------------------------------------
 // Profile: my name, allergies and notes (data/profile.json).
 // Created empty on the first run; changed with the update_profile tool.
 // ---------------------------------------------------------------------------
-const PROFILE_FILE = fileURLToPath(new URL("../data/profile.json", import.meta.url));
-
 export interface Profile {
   name: string | null;
   allergies: string[];
+  // "unknown" = never asked, "none_known" = the user said they have no known
+  // allergies, "has_allergies" = the list above is not empty.
+  // (An empty list alone can't tell "none" apart from "never asked".)
+  allergy_status: "unknown" | "none_known" | "has_allergies";
   notes: string[];
 }
 
 export async function loadProfile(): Promise<Profile> {
   try {
-    return JSON.parse(await readFile(PROFILE_FILE, "utf8")) as Profile;
+    const profile = JSON.parse(await readFile(profileFile(), "utf8")) as Profile;
+    // Profiles saved before allergy_status existed: work it out from the list.
+    profile.allergy_status ??= profile.allergies.length > 0 ? "has_allergies" : "unknown";
+    return profile;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      const empty: Profile = { name: null, allergies: [], notes: [] };
+      const empty: Profile = { name: null, allergies: [], allergy_status: "unknown", notes: [] };
       await saveProfile(empty);
       return empty;
     }
@@ -79,16 +98,14 @@ export async function loadProfile(): Promise<Profile> {
 }
 
 export async function saveProfile(profile: Profile): Promise<void> {
-  await mkdir(dirname(PROFILE_FILE), { recursive: true });
-  await writeFile(PROFILE_FILE, JSON.stringify(profile, null, 2) + "\n", "utf8");
+  await mkdir(dirname(profileFile()), { recursive: true });
+  await writeFile(profileFile(), JSON.stringify(profile, null, 2) + "\n", "utf8");
 }
 
 // ---------------------------------------------------------------------------
 // Settings: my usual clock time for each part of the day (data/settings.json).
 // Created with these defaults on the first run; edit the file to change them.
 // ---------------------------------------------------------------------------
-const SETTINGS_FILE = fileURLToPath(new URL("../data/settings.json", import.meta.url));
-
 export interface Settings {
   slot_times: { morning: string; lunch: string; evening: string; bedtime: string }; // "HH:MM"
 }
@@ -99,7 +116,7 @@ const DEFAULT_SETTINGS: Settings = {
 
 export async function loadSettings(): Promise<Settings> {
   try {
-    const settings = JSON.parse(await readFile(SETTINGS_FILE, "utf8")) as Settings;
+    const settings = JSON.parse(await readFile(settingsFile(), "utf8")) as Settings;
     // The file is edited by hand, so check the times are really "HH:MM".
     for (const slot of ["morning", "lunch", "evening", "bedtime"] as const) {
       const time = settings.slot_times?.[slot];
@@ -110,8 +127,8 @@ export async function loadSettings(): Promise<Settings> {
     return settings;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      await mkdir(dirname(SETTINGS_FILE), { recursive: true });
-      await writeFile(SETTINGS_FILE, JSON.stringify(DEFAULT_SETTINGS, null, 2) + "\n", "utf8");
+      await mkdir(dirname(settingsFile()), { recursive: true });
+      await writeFile(settingsFile(), JSON.stringify(DEFAULT_SETTINGS, null, 2) + "\n", "utf8");
       return DEFAULT_SETTINGS;
     }
     throw err;
